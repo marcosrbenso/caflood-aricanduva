@@ -26,7 +26,7 @@ README.md         # Project description
 - R (≥ 4.2.0)
 - Libraries: sf, terra, raster, tidyverse, ggplot2, cafloodr, etc.
 
-## Caflodr
+## cafloodr pacakge
 
 cafloodr is an R package to automate the preprocessing and execution of CADDIES/CAFLOOD using R. 
 
