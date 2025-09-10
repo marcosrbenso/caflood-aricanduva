@@ -37,5 +37,3 @@ cafloodr is an R package to automate the preprocessing and execution of CADDIES/
 # References
 
 Guidolin, M., et al. (2016). A data-driven cellular automata model for flood simulation. Environmental Modelling & Software.
-
-CAFLOOD GitHub repository: https://github.com/OpenHydroGroup/CAFlood
