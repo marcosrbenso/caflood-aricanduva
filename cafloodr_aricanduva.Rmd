@@ -1,0 +1,454 @@
+---
+title: "CAFLOOD Simulations"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Introduction
+
+# Load Libraries
+
+```{r, message=FALSE} 
+library(sf)
+library(tidyverse)
+library(terra)
+library(whitebox)
+library(raster)
+library(sensitivity)
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(imputeTS)
+library(cafloodr)
+
+``` 
+
+
+
+# CAFLOOD simulations
+
+
+## Resample LiDAR data
+
+```{r, message = F}
+dem_base <- terra::project(rast(dem_path2),rast(dem_path1))
+
+resample_fun <- function(dem,res){
+  x <- rast(dem_base)
+  res(x) <- res
+  dem_new <- resample(dem, x,method="bilinear")
+  return(dem_new)
+
+}
+
+dem_base_15 <- resample_fun(dem_base,15)
+dem_base_20 <- resample_fun(dem_base,20)
+dem_base_30 <- resample_fun(dem_base,30)
+dem_base_50 <- resample_fun(dem_base,50)
+
+writeRaster(dem_base,file.path("C:/Projetos/01_DTI-A/02_Input/01_SP/03_DEM/","dem_base.tif"),overwrite=T)
+writeRaster(dem_base_15,file.path("C:/Projetos/01_DTI-A/02_Input/01_SP/03_DEM/","dem_base_15.tif"),overwrite=T)
+writeRaster(dem_base_20,file.path("C:/Projetos/01_DTI-A/02_Input/01_SP/03_DEM/","dem_base_20.tif"),overwrite=T)
+writeRaster(dem_base_30,file.path("C:/Projetos/01_DTI-A/02_Input/01_SP/03_DEM/","dem_base_30.tif"),overwrite=T)
+writeRaster(dem_base_50,file.path("C:/Projetos/01_DTI-A/02_Input/01_SP/03_DEM/","dem_base_50.tif"),overwrite=T)
+
+```
+
+## Run CAFLOOD for LiDAR data
+
+```{r, message = F}
+
+
+
+Input <- "C:\\Projetos\\01_DTI-A\\02_Input\\01_SP\\"
+Output <- "E:\\01_DTI-A\\03_Analyses\\01_SP\\dem_resolution_outputs_certo_3\\"
+
+
+param <- list(alpha_fraction = 0.1,
+              roughness_global = 0.009, #0.06
+              slope_tolerance = 0.528,
+              boundary_ele = -9,
+              Raster_WD_Tolerance = 0.1,
+              Upstream_Reduction = 0.5)
+
+name = c("dem_base","dem_base_15","dem_base_20","dem_base_30","dem_base_50")
+
+for(d in 1:5){
+  for(i in 1:4){
+    cafloodr_A01_2(param,
+             caflood_path,
+             Input,
+             Output,
+             event_name = paste0("Event",i),
+             dem_name = paste0(name[d]),
+             path2 = "03_DEM\\",
+             outlet_path = "C:\\Projetos\\01_DTI-A\\02_Input\\01_SP\\01_Hidro_hora\\estacoes.shp",
+             rain_path = paste0("C:/Projetos/01_DTI-A/02_Input/01_SP/01_Hidro_hora/Event_",i,"_SPprec.csv"),
+             stream_network = "C:\\Projetos\\01_DTI-A\\02_Input\\01_SP\\08_Area_studo\\aricanduva_streams2",
+             snap_dist = snap_dist[d])
+
+  }
+}
+
+```
+
+# CAFLOOD simulations for DEM products
+
+## Hydraulic correction
+
+
+```{r, message = F}
+resample_dem <- function(dem,dem_ref){
+
+  values(dem)[values(dem)==0] <- NA
+  dem <- raster::projectRaster(dem,crs = "EPSG:31983")
+  dem <- raster::resample(dem,dem_ref)
+  return(dem)
+
+}
+
+carve_dem <- function(dem,centerline_sf){
+
+  elv <- terra::extract(rast(dem),centerline_sf,method = "bilinear",cells=TRUE)
+  colnames(elv) <- c("ID","Elv","cell")
+
+  strahler_max <- max(centerline_sf$STRAHLER)
+
+  centerline_sf <- centerline_sf %>% mutate(carve = ifelse(STRAHLER == strahler_max,3,
+                                                           ifelse(STRAHLER == strahler_max-1,2,0.5)))
+
+  centerline_sf <- merge(centerline_sf, elv, by.x="FID",by.y="ID")
+  centerline_sf <- centerline_sf %>%
+    mutate(Elv = Elv-carve)
+
+  dem[centerline_sf$cell] <- centerline_sf$Elv
+
+  dem <- projectRaster(dem,crs = "EPSG:31983")
+
+  return(dem)
+
+}
+
+extract_river <- function(dem,lon,lat,target_area,radius,n_points, snap_dist){
+
+  # Define the initial outlet and radius (make sure your coordinates are in a projected system for distance accuracy)
+  initial_outlet <- c(x = lon, y = lat)  # example coordinates in meters
+
+  #-------------------------------------------------------------------------
+  # Create temporary directory for auxiliary files in the river network analysis
+  wd <- tempdir()
+
+  #-------------------------------------------------------------------------
+  # River network analysis
+
+  values(dem)[values(dem)==0] <- NA
+
+  writeRaster(dem,paste0(wd,"/","dem",".tif"), overwrite = T )
+
+  # Prepare DEM for Hydrology Analyses
+
+  wbt_breach_depressions_least_cost(
+    dem = "dem.tif",
+    output = "dem_breached.tif",
+    dist = 5,
+    fill = TRUE,
+    wd = wd,
+    verbose_mode = FALSE)
+
+  wbt_d8_flow_accumulation(input = "dem_breached.tif",
+                           output = "D8FA.tif",
+                           wd = wd,
+                           verbose_mode = FALSE)
+
+
+  wbt_d8_pointer(dem = "dem_breached.tif",
+                 output = "D8pointer.tif",
+                 wd = wd,
+                 verbose_mode = FALSE)
+
+  threshold <- mean(values(rast(paste0(wd,"//D8FA.tif"))),na.rm=T)
+
+  wbt_extract_streams(flow_accum = "D8FA.tif",
+                      output = "raster_streams.tif",
+                      threshold = threshold,
+                      wd = wd,
+                      verbose_mode = FALSE)
+
+  # Create flow accumulation and pointer grids
+
+  # Define the function to generate a random point
+  f <- function() {
+    # Generate two random numbers and sum them
+    u <- runif(1) + runif(1)
+    # Generate a random angle between 0 and 2*pi
+    t <- runif(1, min = 0, max = 2 * pi)
+    # Apply the condition to compute r
+    r <- if (u > 1) 2 - u else u
+    # Return the (x, y) coordinate
+    c(x = r * cos(t), y = r * sin(t))
+  }
+
+  # Generate 10,000 random points
+  points <- t(replicate(n_points, f()))
+
+
+  # Compute the x and y coordinates of the random sample points
+  random_points <- data.frame(
+    x = lon + points[,1]*radius,
+    y = lat + points[,2]*radius
+  )
+
+
+  st_as_sf(random_points,
+           coords = c("x","y"), crs = "EPSG:31983") -> pour_point
+
+  plot(dem)
+  plot(pour_point,add=T)
+
+  st_write(pour_point,paste0(wd,"\\pourpoints.shp"), delete_layer  = TRUE)
+
+  wbt_jenson_snap_pour_points(pour_pts = "pourpoints.shp",
+                              streams = "raster_streams.tif",
+                              output =  "snappedpp.shp",
+                              snap_dist = 50,
+                              wd = wd,
+                              verbose_mode = FALSE) #careful with this! Know the units of your data
+
+
+  outlets_snapped <- st_read(file.path(wd, "snappedpp.shp"), quiet = TRUE)
+
+  wbt_watershed(d8_pntr = "D8pointer.tif",
+                pour_pts = "snappedpp.shp",
+                output = "catchment.tif",
+                wd = wd,
+                verbose_mode = FALSE)
+
+  # Vectorize catchments
+
+  catchments <- st_sfc(crs = "EPSG:31983")
+  for(id in outlets_snapped$FID){
+    # Write outlet shapefile for the current id
+    st_write(outlets_snapped[outlets_snapped$FID == id, ],
+             file.path(wd, paste0(id, "_outlet.shp")),
+             delete_layer = TRUE, quiet = TRUE)
+
+    # Run watershed delineation using WhiteboxTools
+    whitebox::wbt_watershed(d8_pntr = "D8pointer.tif",
+                            pour_pts = paste0(id, "_outlet.shp"),
+                            output = paste0(id, "_catchment.tif"),
+                            wd = wd)
+
+    # Read the delineated catchment raster
+    drainage <- read_stars(file.path(wd, paste0(id, "_catchment.tif")))
+
+    # Convert the raster catchment to vector polygons
+    contours <- tryCatch({
+      st_contour(drainage, breaks = 1) |>
+        st_geometry() |>
+        st_cast("POLYGON")
+    }, error = function(e){
+      message(paste("Error in st_contour for FID", id, ":", e$message))
+      NA
+    })
+
+    # Choose the largest polygon by area
+    contours <- tryCatch({
+      contours[which.max(st_area(contours))]
+    }, error = function(e){
+      message(paste("Error in selecting max area for FID", id, ":", e$message))
+      NA
+    })
+
+    # If contours extraction was successful, add to catchments
+    if(!is.na(contours)[1]){
+      new_sf <- st_sf(id = id,
+                      geometry = st_sfc(contours, crs = st_crs(catchments)))
+      catchments <- rbind(catchments, new_sf)
+    }
+  }
+
+  compare_areas <- data.frame(
+    name = catchments$id,
+    expected_area =  target_area,
+    computed_area = st_area(catchments) |> units::set_units("km^2") |> round(1)
+  )
+  compare_areas %>%
+    mutate(
+      error = abs(expected_area-as.numeric(computed_area))
+    ) %>%
+    subset(
+      error < 10
+    ) %>% arrange(error) -> compare_areas
+
+  catchments <- catchments %>% subset(id == compare_areas$name[1])
+
+  print(tm_shape(dem) +
+          tm_raster(palette = terrain.colors(10))+
+          tm_shape(catchments)+
+          tm_borders("black", lwd = .5))
+
+  streams <- rast(paste0(wd,paste0("\\raster_streams.tif")))
+
+  wbt_raster_streams_to_vector(
+    streams = "raster_streams.tif",
+    d8_pntr = "D8pointer.tif",
+    output = "streams.shp",
+    wd = wd,
+    verbose_mode = FALSE
+  )
+
+  catchments <- st_transform(catchments,crs = "EPSG:31983")
+
+  stream_newtork <- st_read(paste0(wd,"\\streams.shp"),crs="EPSG:31983")
+  stream_newtork <- st_intersection(stream_newtork,catchments)
+  plot(stream_newtork)
+
+  stream_newtork <- stream_newtork %>% filter(st_is(. , "LINESTRING"))
+  sf::st_write(stream_newtork,paste0(wd,"\\stream.shp"), delete_layer = T)
+
+  wbt_vector_stream_network_analysis(
+    streams =  "stream.shp",
+    output = "stream_analysis.shp",
+    snap = 0.1,
+    wd = wd,
+    verbose_mode = F
+  )
+
+  # Stream network analysis
+
+  stream_newtork <- st_read(paste0(wd,"\\stream.shp"))
+  streams_analysis <- st_read(paste0(wd,"\\stream_analysis.shp"))
+
+
+  streams_new <- cbind(stream_newtork,
+                       st_drop_geometry(streams_analysis))
+
+  dem2 <- crop(dem, extent(catchments))
+  dem3 <- mask(dem2, catchments)
+
+  return(list(centerline_sf = streams_new,dem = dem3))
+
+}
+
+library(reticulate)
+
+reticulate::use_python("C:/Users/marco/anaconda3/python.exe")
+reticulate::py_config()
+source_python("C:\\Projetos\\00_Admin\\forward_mole_1D_2.py")
+
+dem_ref <- raster("C:\\Projetos\\01_DTI-A\\02_Input\\01_SP\\03_DEM\\10m_V001_sirgas2000.tif")
+
+lon = 341076.4
+lat = 7397605.98
+target_area = 103 # km²
+
+workspace <- 'C:\\Projetos\\01_DTI-A\\02_Input\\01_SP\\03_DEM\\dem_tests\\'
+setwd(workspace)
+
+files <- list.files(pattern = "tif")[1]
+
+lapply( list.files(pattern = "tif"),function(files){
+
+  name <- substr(files,1,nchar(files)-4)
+
+  dem <- raster(files)
+  #### Resample DEM
+  dem_res <- resample_dem(dem,dem_ref)
+  writeRaster(dem_res*1.2,
+              paste0(workspace,"output2/",name,"_resample.tif"),overwrite=TRUE)
+
+  ### Extract river
+  extract_river(
+    dem = dem_res,
+    lon,lat,103,radius = 500,n_points = 50, snap_dist = 50
+  ) -> river
+
+  centerline_sf <- river$centerline_sf
+  dem_crop <- river$dem
+
+  ### Carve DEM
+  carve_dem(dem_crop,centerline_sf) -> dem_carved
+  writeRaster(dem_carved,paste0("output2//",name,"_carved.tif"),overwrite=TRUE)
+
+
+  names(centerline_sf)[7] <- "id_outlet"
+  write_sf(centerline_sf,paste0("output2//",name,"_centerline.shp"),delete_dsn = FALSE)
+
+
+  FM1D(path2 = file.path(workspace,"output2//"),
+       dem_name = paste0(name,"_carved"),
+       hydro_name = paste0(name,"_centerline"))
+
+
+})
+
+```
+
+
+
+
+## Run CAFLOOD for different DEM products and treatments
+
+```{r, message = F}
+
+caflood_path <- "C:/Path/CAFLOOD"
+Input  <- "C:/Projetos/01_DTI-A/02_Input/01_SP/"
+Output <- "E:/01_DTI-A/03_Analyses/01_SP/dem_resolution2/"
+
+param <- list(
+  alpha_fraction     = 0.1,
+  roughness_global   = 0.009, #0.06
+  slope_tolerance    = 0.528,
+  boundary_ele       = -9,
+  Raster_WD_Tolerance = 0.1,
+  Upstream_Reduction = 0.5
+)
+
+
+# Define DEMs and their corresponding rivers in a tibble
+dem_river_tbl <- tibble::tibble(
+  dem = c("anadem_resampled","anadem_corrected","anadem_corrected_1D_FM",
+          "aster10m","aster_corrected","aster_corrected_1D_FM",
+          "nasadem10m","nasadem_corrected","nasadem_corrected_1D_FM",
+          "alospalsar10m","alospalsar_corrected","alospalsar_corrected_1D_FM",
+          "srtm_resampled","srtm_corrected","srtm_corrected_1D_FM"),
+  river = rep(c("anadem","aster","nasadem","alospalsar","srtm"), each = 3)
+)
+
+# Loop over DEMs and events
+for (i in seq_len(nrow(dem_river_tbl))) {
+  for (e in 1:4) {
+    
+    event_file <- paste0("Event_", e, "_SPprec.csv")
+    
+    cafloodr_A01(
+      param          = param,
+      caflood_path   = caflood_path,
+      Input          = Input,
+      Output         = Output,
+      event_name     = paste0("Event", e),
+      dem_name       = dem_river_tbl$dem[i],
+      path2          = "03_DEM/",
+      outlet_path    = "C:/Projetos/01_DTI-A/02_Input/01_SP/01_Hidro_hora/estacoes.shp",
+      rain_path      = file.path("C:/Projetos/01_DTI-A/02_Input/01/SP/01_Hidro_hora", event_file),
+      stream_network = file.path("C:/Projetos/01_DTI-A/02_Input/01/SP/08_Area_studo", 
+                                 paste0("hidrografia2", dem_river_tbl$river[i])),
+      snap_dist      = 200
+    )
+    
+  }
+}
+
+```
+
+
+
