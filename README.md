@@ -32,7 +32,7 @@ cafloodr is an R package to automate the preprocessing and execution of CADDIES/
 
 
 
-[![GitHub](https://img.shields.io/badge/GitHub-cafloodr-blue?logo=github)]([https://github.com/yourusername/yourrepository]([https://github.com/marcosrbenso/cam-413/blob/main/CAM_413_Aula_1_Introdu%C3%A7%C3%A3o_ao_R_no_Google_Colab.ipynb](https://github.com/marcosrbenso/cafloodr)))
+[![GitHub](https://img.shields.io/badge/GitHub-cafloodr-blue?logo=github)](https://github.com/marcosrbenso/cafloodr)
 
 # References
 
